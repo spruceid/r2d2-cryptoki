@@ -166,7 +166,7 @@ impl ManageConnection for SessionManager {
 
 #[cfg(test)]
 mod test {
-    use std::{env, fs, path::Path, thread, time::Duration};
+    use std::{env, fs, path::Path, time::Duration};
 
     use cached::proc_macro::{cached, once};
     use cryptoki::{
@@ -305,7 +305,7 @@ mod test {
         let pool2 = pool1.clone();
         let config1 = config.clone();
         let config2 = config.clone();
-        thread::spawn(move || {
+        loom::thread::spawn(move || {
             let sig = sign(&config1, &pool1.get().unwrap());
             verify(&config1, pool1.get().unwrap(), &sig);
         });
@@ -347,7 +347,7 @@ mod test {
             let config2 = config.clone();
             let pool1 = default_setup(config.clone());
             let pool2 = pool1.clone();
-            thread::spawn(move || {
+            loom::thread::spawn(move || {
                 let session = pool1.get().unwrap();
                 let sig = sign(&config, &session);
                 verify(&config, session, &sig);
