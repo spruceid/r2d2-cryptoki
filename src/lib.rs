@@ -57,7 +57,7 @@ impl SessionManager {
     /// # Example
     /// ```no_run
     ///  # use r2d2_cryptoki::{*, cryptoki::{context::*, types::AuthPin}};
-    ///  let mut pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
+    ///  let pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
     ///  pkcs11 .initialize(CInitializeArgs::OsThreads).unwrap();
     ///  let slots = pkcs11.get_slots_with_token().unwrap();
     ///  let slot = slots.first().unwrap();
@@ -79,7 +79,7 @@ impl SessionManager {
     /// # Example
     /// ```no_run
     ///  # use r2d2_cryptoki::{*, cryptoki::{context::*, types::AuthPin}};
-    ///  # let mut pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
+    ///  # let pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
     ///  # pkcs11.initialize(CInitializeArgs::OsThreads);
     ///  # let slots = pkcs11.get_slots_with_token().unwrap();
     ///  # let slot = slots.first().unwrap();
