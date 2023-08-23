@@ -9,12 +9,9 @@ use cryptoki::{
     error::RvError,
     session::{Session, SessionState, UserType},
     slot::{Limit, Slot},
+    types::AuthPin,
 };
 use r2d2::ManageConnection;
-use zeroize::Zeroizing;
-
-/// [Zeroize] wrapper for a PKCS#11 Pin
-pub type Pin = Zeroizing<String>;
 
 /// Alias for this crate's instance of r2d2's Pool
 pub type Pool = r2d2::Pool<SessionManager>;
@@ -35,13 +32,13 @@ pub enum SessionType {
     /// [SessionState::RoPublic]
     RoPublic,
     /// [SessionState::RoUser]
-    RoUser(Pin),
+    RoUser(AuthPin),
     /// [SessionState::RwPublic]
     RwPublic,
     /// [SessionState::RwUser]
-    RwUser(Pin),
+    RwUser(AuthPin),
     /// [SessionState::RwSecurityOfficer]
-    RwSecurityOfficer(Pin),
+    RwSecurityOfficer(AuthPin),
 }
 
 impl SessionType {
@@ -59,13 +56,12 @@ impl SessionType {
 impl SessionManager {
     /// # Example
     /// ```no_run
-    ///  # use r2d2_cryptoki::*;
-    ///  # use cryptoki::context::*;
+    ///  # use r2d2_cryptoki::{*, cryptoki::{context::*, types::AuthPin}};
     ///  let mut pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
     ///  pkcs11 .initialize(CInitializeArgs::OsThreads).unwrap();
     ///  let slots = pkcs11.get_slots_with_token().unwrap();
     ///  let slot = slots.first().unwrap();
-    ///  let manager = SessionManager::new(pkcs11, *slot, SessionType::RwUser(Pin::new("abcd".to_string())));
+    ///  let manager = SessionManager::new(pkcs11, *slot, SessionType::RwUser(AuthPin::new("abcd".to_string())));
     /// ```
     pub fn new(pkcs11: Pkcs11, slot: Slot, session_type: SessionType) -> Self {
         Self {
@@ -82,13 +78,12 @@ impl SessionManager {
     ///
     /// # Example
     /// ```no_run
-    ///  # use r2d2_cryptoki::*;
-    ///  # use cryptoki::context::*;
+    ///  # use r2d2_cryptoki::{*, cryptoki::{context::*, types::AuthPin}};
     ///  # let mut pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
     ///  # pkcs11.initialize(CInitializeArgs::OsThreads);
     ///  # let slots = pkcs11.get_slots_with_token().unwrap();
     ///  # let slot = slots.first().unwrap();
-    ///  # let manager = SessionManager::new(pkcs11, *slot, SessionType::RwUser(Pin::new("fedcba".to_string())));
+    ///  # let manager = SessionManager::new(pkcs11, *slot, SessionType::RwUser(AuthPin::new("fedcba".to_string())));
     ///  let pool_builder = r2d2::Pool::builder();
     ///  let pool_builder = if let Some(max_size) = manager.max_size(100).unwrap() {
     ///     pool_builder.max_size(max_size)
@@ -194,7 +189,7 @@ mod test {
         }
         fs::create_dir_all(tokens_path.to_str().unwrap()).unwrap();
 
-        let mut pkcs11 = Pkcs11::new("libsofthsm2.so").expect("Could not use pkcs11 library");
+        let pkcs11 = Pkcs11::new("libsofthsm2.so").expect("Could not use pkcs11 library");
         pkcs11
             .initialize(CInitializeArgs::OsThreads)
             .expect("Could not initialize pkcs11");
@@ -211,20 +206,20 @@ mod test {
             *slots.first().expect("Could not find a slot")
         };
         pkcs11
-            .init_token(slot, &pin, "Signing Service Token")
+            .init_token(slot, &pin.clone().into(), "token")
             .expect("Could not initialize token");
         let session = pkcs11.open_rw_session(slot).unwrap();
         session
-            .login(cryptoki::session::UserType::So, Some(&pin))
+            .login(cryptoki::session::UserType::So, Some(&pin.clone().into()))
             .unwrap();
-        session.init_pin(&pin).unwrap();
+        session.init_pin(&pin.into()).unwrap();
 
         (pkcs11, slot)
     }
 
     fn default_setup(config: Config) -> Pool {
         let pin_string = "abcde".to_string();
-        let pin = Pin::new(pin_string.clone());
+        let pin = AuthPin::new(pin_string.clone());
         let (pkcs11, slot) = default_token(pin_string);
 
         let manager = SessionManager::new(pkcs11, slot, SessionType::RwUser(pin));
@@ -299,6 +294,17 @@ mod test {
                 signature,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn basic() {
+        let config = Config {
+            max_sessions: None,
+            label: "basic".into(),
+        };
+        let pool = default_setup(config.clone());
+        let sig = sign(&config, &pool.get().unwrap());
+        verify(&config, pool.get().unwrap(), &sig);
     }
 
     fn basic_test(config: &Config, pool1: Pool) {

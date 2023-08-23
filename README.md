@@ -8,14 +8,13 @@ Session pool manager for [cryptoki](https://github.com/parallaxsecond/rust-crypt
 ## Example
 
 ```rust no_run
-use r2d2_cryptoki::*;
-use cryptoki::context::*;
+use r2d2_cryptoki::{*, cryptoki::{context::*, types::AuthPin}};
 
 let mut pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
 pkcs11.initialize(CInitializeArgs::OsThreads).unwrap();
 let slots = pkcs11.get_slots_with_token().unwrap();
 let slot = slots.first().unwrap();
-let manager = SessionManager::new(pkcs11, *slot, SessionType::RwUser(Pin::new("fedcba".to_string())));
+let manager = SessionManager::new(pkcs11, *slot, SessionType::RwUser(AuthPin::new("fedcba".to_string())));
 
 let pool = r2d2::Pool::builder().build(manager).unwrap();
 

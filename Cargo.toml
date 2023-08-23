@@ -1,6 +1,6 @@
 [package]
 name = "r2d2-cryptoki"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Spruce Systems, Inc."]
 license = "MIT OR Apache-2.0"
@@ -9,17 +9,16 @@ repository = "https://github.com/spruceid/r2d2-cryptoki/"
 documentation = "https://docs.rs/r2d2-cryptoki/"
 
 [features]
-serde = ["zeroize/serde"]
+serde = ["cryptoki/serde"]
 
 [dependencies]
-cryptoki = "0.4.1"
+cryptoki = "0.5.0"
 r2d2 = "0.8.10"
-zeroize = { version = "1.5.7", features = ["derive"] }
 
 [dev-dependencies]
 backoff = "0.4.0"
-cached = "0.42.0"
-loom = "0.5.6"
+cached = "0.44.0"
+loom = "0.7.0"
 
 [workspace.metadata.release]
 sign-tag = true
