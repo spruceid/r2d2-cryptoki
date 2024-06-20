@@ -5,7 +5,7 @@ pub use cryptoki;
 pub use r2d2;
 
 use cryptoki::{
-    context::Pkcs11,
+    context::{Function, Pkcs11},
     error::RvError,
     session::{Session, SessionState, UserType},
     slot::{Limit, Slot},
@@ -101,9 +101,9 @@ impl SessionManager {
             }
         };
         let res = match limit {
-            Limit::Max(m) => Some(m.try_into().unwrap_or(u32::max_value())),
+            Limit::Max(m) => Some(m.try_into().unwrap_or(u32::MAX)),
             Limit::Unavailable => None,
-            Limit::Infinite => Some(u32::max_value()),
+            Limit::Infinite => Some(u32::MAX),
         };
         Ok(if let Some(true) = res.map(|r| r > maximum) {
             Some(maximum)
@@ -136,7 +136,7 @@ impl ManageConnection for SessionManager {
         };
         if let Some(user_type) = maybe_user_info {
             match session.login(user_type.0, Some(user_type.1)) {
-                Err(Self::Error::Pkcs11(RvError::UserAlreadyLoggedIn)) => {}
+                Err(Self::Error::Pkcs11(RvError::UserAlreadyLoggedIn, Function::Login)) => {}
                 res => res?,
             };
         }
@@ -147,7 +147,10 @@ impl ManageConnection for SessionManager {
         let actual_state = session.get_session_info()?.session_state();
         let expected_state = &self.session_type;
         if actual_state != expected_state.as_state() {
-            Err(Self::Error::Pkcs11(RvError::UserNotLoggedIn))
+            Err(Self::Error::Pkcs11(
+                RvError::UserNotLoggedIn,
+                Function::GetSessionInfo,
+            ))
         } else {
             Ok(())
         }
