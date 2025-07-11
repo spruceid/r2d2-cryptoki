@@ -1,6 +1,8 @@
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 
+use std::sync::{Arc, Mutex};
+
 pub use cryptoki;
 pub use r2d2;
 
@@ -11,7 +13,7 @@ use cryptoki::{
     slot::{Limit, Slot},
     types::AuthPin,
 };
-use r2d2::ManageConnection;
+use r2d2::{CustomizeConnection, ManageConnection, NopConnectionCustomizer};
 
 /// Alias for this crate's instance of r2d2's Pool
 pub type Pool = r2d2::Pool<SessionManager>;
@@ -23,12 +25,12 @@ pub type PooledSession = r2d2::PooledConnection<SessionManager>;
 pub struct SessionManager {
     pkcs11: Pkcs11,
     slot: Slot,
-    session_type: SessionType,
+    session_state: SessionState,
 }
 
 /// Session types, holding the pin for the authenticated sessions
 #[derive(Debug, Clone)]
-pub enum SessionType {
+pub enum SessionAuth {
     /// [SessionState::RoPublic]
     RoPublic,
     /// [SessionState::RoUser]
@@ -41,7 +43,15 @@ pub enum SessionType {
     RwSecurityOfficer(AuthPin),
 }
 
-impl SessionType {
+/// Mandatory connection customizer for logins
+#[derive(Debug, Clone)]
+struct LoginCustomizer {
+    auth_pin: AuthPin,
+    user_type: UserType,
+    active_sessions: Arc<Mutex<u32>>,
+}
+
+impl SessionAuth {
     fn as_state(&self) -> SessionState {
         match self {
             Self::RoPublic => SessionState::RoPublic,
@@ -49,6 +59,23 @@ impl SessionType {
             Self::RwPublic => SessionState::RwPublic,
             Self::RwUser(_) => SessionState::RwUser,
             Self::RwSecurityOfficer(_) => SessionState::RwSecurityOfficer,
+        }
+    }
+
+    /// Returns the correct customizer to use for the specified session auth
+    pub fn into_customizer(self) -> Box<dyn CustomizeConnection<Session, cryptoki::error::Error>> {
+        match self {
+            Self::RoPublic | Self::RwPublic => Box::new(NopConnectionCustomizer),
+            Self::RoUser(auth_pin) | Self::RwUser(auth_pin) => Box::from(LoginCustomizer {
+                auth_pin,
+                user_type: UserType::User,
+                active_sessions: Default::default(),
+            }),
+            Self::RwSecurityOfficer(auth_pin) => Box::from(LoginCustomizer {
+                auth_pin,
+                user_type: UserType::So,
+                active_sessions: Default::default(),
+            }),
         }
     }
 }
@@ -61,13 +88,13 @@ impl SessionManager {
     ///  pkcs11 .initialize(CInitializeArgs::OsThreads).unwrap();
     ///  let slots = pkcs11.get_slots_with_token().unwrap();
     ///  let slot = slots.first().unwrap();
-    ///  let manager = SessionManager::new(pkcs11, *slot, SessionType::RwUser(AuthPin::new("abcd".to_string())));
+    ///  let manager = SessionManager::new(pkcs11, *slot, &SessionAuth::RwUser(AuthPin::new("abcd".to_string())));
     /// ```
-    pub fn new(pkcs11: Pkcs11, slot: Slot, session_type: SessionType) -> Self {
+    pub fn new(pkcs11: Pkcs11, slot: Slot, session_auth: &SessionAuth) -> Self {
         Self {
             pkcs11,
             slot,
-            session_type,
+            session_state: session_auth.as_state(),
         }
     }
 
@@ -83,8 +110,9 @@ impl SessionManager {
     ///  # pkcs11.initialize(CInitializeArgs::OsThreads);
     ///  # let slots = pkcs11.get_slots_with_token().unwrap();
     ///  # let slot = slots.first().unwrap();
-    ///  # let manager = SessionManager::new(pkcs11, *slot, SessionType::RwUser(AuthPin::new("fedcba".to_string())));
-    ///  let pool_builder = r2d2::Pool::builder();
+    ///  # let session_auth = SessionAuth::RwUser(AuthPin::new("fedcba".to_string()));
+    ///  # let manager = SessionManager::new(pkcs11, *slot, &session_auth);
+    ///  let pool_builder = Pool::builder().connection_customizer(session_auth.into_customizer());
     ///  let pool_builder = if let Some(max_size) = manager.max_size(100).unwrap() {
     ///     pool_builder.max_size(max_size)
     ///  } else {
@@ -113,35 +141,21 @@ impl ManageConnection for SessionManager {
 
     type Error = cryptoki::error::Error;
 
-    // Login is global, once a session logs in, all sessions are logged in https://stackoverflow.com/a/40225885.
-    // TODO cryptoki automatically logs out on Drop, so this is ineficient and we will need to find a better way to check the login state when we start having a pool of sessions
     fn connect(&self) -> Result<Self::Connection, Self::Error> {
-        let session = match self.session_type {
-            SessionType::RoPublic | SessionType::RoUser(_) => {
+        let session = match self.session_state {
+            SessionState::RoPublic | SessionState::RoUser => {
                 self.pkcs11.open_ro_session(self.slot)?
             }
-            SessionType::RwPublic | SessionType::RwUser(_) | SessionType::RwSecurityOfficer(_) => {
+            SessionState::RwPublic | SessionState::RwUser | SessionState::RwSecurityOfficer => {
                 self.pkcs11.open_rw_session(self.slot)?
             }
         };
-        let maybe_user_info = match &self.session_type {
-            SessionType::RoPublic | SessionType::RwPublic => None,
-            SessionType::RoUser(pin) | SessionType::RwUser(pin) => Some((UserType::User, pin)),
-            SessionType::RwSecurityOfficer(pin) => Some((UserType::So, pin)),
-        };
-        if let Some(user_type) = maybe_user_info {
-            match session.login(user_type.0, Some(user_type.1)) {
-                Err(Self::Error::Pkcs11(RvError::UserAlreadyLoggedIn, Function::Login)) => {}
-                res => res?,
-            };
-        }
         Ok(session)
     }
 
     fn is_valid(&self, session: &mut Self::Connection) -> Result<(), Self::Error> {
         let actual_state = session.get_session_info()?.session_state();
-        let expected_state = &self.session_type;
-        if actual_state != expected_state.as_state() {
+        if actual_state != self.session_state {
             Err(Self::Error::Pkcs11(
                 RvError::UserNotLoggedIn,
                 Function::GetSessionInfo,
@@ -154,6 +168,38 @@ impl ManageConnection for SessionManager {
     fn has_broken(&self, _session: &mut Self::Connection) -> bool {
         // TODO find a way to check session state without reaching out to the HSM
         false
+    }
+}
+
+impl CustomizeConnection<Session, cryptoki::error::Error> for LoginCustomizer {
+    fn on_acquire(&self, session: &mut Session) -> Result<(), cryptoki::error::Error> {
+        let mutex = self.active_sessions.clone();
+        let mut active = mutex.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Login is global, once a session logs in, all sessions are logged in https://stackoverflow.com/a/40225885.
+        if *active == 0 {
+            match session.login(self.user_type, Some(&self.auth_pin)) {
+                // Can happen with poisoned mutex
+                Err(cryptoki::error::Error::Pkcs11(
+                    RvError::UserAlreadyLoggedIn,
+                    Function::Login,
+                )) => {}
+                res => res?,
+            };
+        };
+
+        // Increase after login to prefer login too many over too few
+        *active += 1;
+
+        Ok(())
+    }
+
+    fn on_release(&self, _: Session) {
+        let mutex = self.active_sessions.clone();
+        let mut active = mutex.lock().unwrap_or_else(|e| e.into_inner());
+        if *active > 0 {
+            *active -= 1;
+        }
     }
 }
 
@@ -220,8 +266,9 @@ mod test {
         let pin = AuthPin::new(pin_string.clone());
         let (pkcs11, slot) = default_token(pin_string);
 
-        let manager = SessionManager::new(pkcs11, slot, SessionType::RwUser(pin));
-        let pool_builder = r2d2::Pool::builder();
+        let login = SessionAuth::RwUser(pin);
+        let manager = SessionManager::new(pkcs11, slot, &login);
+        let pool_builder = Pool::builder().connection_customizer(login.into_customizer());
         let pool_builder = if let Some(m) = config.max_sessions {
             pool_builder.max_size(m)
         } else {
