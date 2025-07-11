@@ -94,12 +94,7 @@ impl SessionManager {
     /// ```
     pub fn max_size(&self, maximum: u32) -> Result<Option<u32>, cryptoki::error::Error> {
         let token_info = self.pkcs11.get_token_info(self.slot)?;
-        let limit = match self.session_type {
-            SessionType::RoPublic | SessionType::RoUser(_) => token_info.max_session_count(),
-            SessionType::RwPublic | SessionType::RwUser(_) | SessionType::RwSecurityOfficer(_) => {
-                token_info.max_session_count()
-            }
-        };
+        let limit = token_info.max_session_count();
         let res = match limit {
             Limit::Max(m) => Some(m.try_into().unwrap_or(u32::MAX)),
             Limit::Unavailable => None,
