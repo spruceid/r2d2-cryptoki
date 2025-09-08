@@ -22,7 +22,8 @@ let slot = slots.first().unwrap();
 let session_auth = SessionAuth::RwUser(AuthPin::new("fedcba".to_string()));
 let manager = SessionManager::new(pkcs11, *slot, &session_auth);
 
-let pool = let pool_builder = Pool::builder().connection_customizer(session_auth.into_customizer()).unwrap();
+let pool_builder = Pool::builder().connection_customizer(session_auth.into_customizer());
+let pool = pool_builder.build(manager).unwrap();
 
 let session = pool.get().unwrap();
 println!("{:?}", session.get_session_info().unwrap());
