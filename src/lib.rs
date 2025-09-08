@@ -240,7 +240,7 @@ mod test {
         pkcs11
     }
 
-    #[cached(sync_writes = true)]
+    #[cached(sync_writes = "default")]
     fn default_token(pin: String) -> (Pkcs11, Slot) {
         let pkcs11 = default_pkcs11();
         let slot = {
