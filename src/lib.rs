@@ -85,10 +85,10 @@ impl SessionManager {
     /// ```no_run
     ///  # use r2d2_cryptoki::{*, cryptoki::{context::*, types::AuthPin}};
     ///  let pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
-    ///  pkcs11 .initialize(CInitializeArgs::OsThreads).unwrap();
+    ///  pkcs11 .initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
     ///  let slots = pkcs11.get_slots_with_token().unwrap();
     ///  let slot = slots.first().unwrap();
-    ///  let manager = SessionManager::new(pkcs11, *slot, &SessionAuth::RwUser(AuthPin::new("abcd".to_string())));
+    ///  let manager = SessionManager::new(pkcs11, *slot, &SessionAuth::RwUser(AuthPin::new("abcd".into())));
     /// ```
     pub fn new(pkcs11: Pkcs11, slot: Slot, session_auth: &SessionAuth) -> Self {
         Self {
@@ -107,10 +107,10 @@ impl SessionManager {
     /// ```no_run
     ///  # use r2d2_cryptoki::{*, cryptoki::{context::*, types::AuthPin}};
     ///  # let pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
-    ///  # pkcs11.initialize(CInitializeArgs::OsThreads);
+    ///  # pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK));
     ///  # let slots = pkcs11.get_slots_with_token().unwrap();
     ///  # let slot = slots.first().unwrap();
-    ///  # let session_auth = SessionAuth::RwUser(AuthPin::new("fedcba".to_string()));
+    ///  # let session_auth = SessionAuth::RwUser(AuthPin::new("fedcba".into()));
     ///  # let manager = SessionManager::new(pkcs11, *slot, &session_auth);
     ///  let pool_builder = Pool::builder().connection_customizer(session_auth.into_customizer());
     ///  let pool_builder = if let Some(max_size) = manager.max_size(100).unwrap() {
@@ -209,7 +209,7 @@ mod test {
 
     use cached::proc_macro::{cached, once};
     use cryptoki::{
-        context::CInitializeArgs,
+        context::{CInitializeArgs, CInitializeFlags},
         mechanism::Mechanism,
         object::{Attribute, KeyType, ObjectClass},
     };
@@ -235,7 +235,7 @@ mod test {
 
         let pkcs11 = Pkcs11::new("libsofthsm2.so").expect("Could not use pkcs11 library");
         pkcs11
-            .initialize(CInitializeArgs::OsThreads)
+            .initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
             .expect("Could not initialize pkcs11");
         pkcs11
     }
@@ -263,7 +263,7 @@ mod test {
 
     fn default_setup(config: Config) -> Pool {
         let pin_string = "abcde".to_string();
-        let pin = AuthPin::new(pin_string.clone());
+        let pin = AuthPin::new(pin_string.clone().into());
         let (pkcs11, slot) = default_token(pin_string);
 
         let login = SessionAuth::RwUser(pin);
@@ -324,7 +324,7 @@ mod test {
             .sign(&Mechanism::Ecdsa, *private, "test_data".as_bytes())
             .unwrap()
     }
-    fn verify(config: &Config, session: PooledConnection<SessionManager>, signature: &[u8]) {
+    fn verify(config: &Config, session: &PooledConnection<SessionManager>, signature: &[u8]) {
         let template = vec![
             Attribute::Class(ObjectClass::PUBLIC_KEY),
             Attribute::Label(config.label.clone()),
@@ -349,7 +349,7 @@ mod test {
         };
         let pool = default_setup(config.clone());
         let sig = sign(&config, &pool.get().unwrap());
-        verify(&config, pool.get().unwrap(), &sig);
+        verify(&config, &pool.get().unwrap(), &sig);
     }
 
     fn basic_test(config: &Config, pool1: Pool) {
@@ -358,10 +358,10 @@ mod test {
         let config2 = config.clone();
         loom::thread::spawn(move || {
             let sig = sign(&config1, &pool1.get().unwrap());
-            verify(&config1, pool1.get().unwrap(), &sig);
+            verify(&config1, &pool1.get().unwrap(), &sig);
         });
         let sig = sign(&config2, &pool2.get().unwrap());
-        verify(&config2, pool2.get().unwrap(), &sig);
+        verify(&config2, &pool2.get().unwrap(), &sig);
     }
 
     #[test]
@@ -401,11 +401,11 @@ mod test {
             loom::thread::spawn(move || {
                 let session = pool1.get().unwrap();
                 let sig = sign(&config, &session);
-                verify(&config, session, &sig);
+                verify(&config, &session, &sig);
             });
             let session = pool2.get().unwrap();
             let sig = sign(&config2, &session);
-            verify(&config2, session, &sig);
+            verify(&config2, &session, &sig);
         });
     }
 }
