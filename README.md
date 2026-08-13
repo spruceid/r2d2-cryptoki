@@ -16,10 +16,10 @@ The `SessionAuth` can be converted into the appropriate `ConnectionCustomizer`.
 use r2d2_cryptoki::{*, cryptoki::{context::*, types::AuthPin}};
 
 let pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
-pkcs11.initialize(CInitializeArgs::OsThreads).unwrap();
+pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
 let slots = pkcs11.get_slots_with_token().unwrap();
 let slot = slots.first().unwrap();
-let session_auth = SessionAuth::RwUser(AuthPin::new("fedcba".to_string()));
+let session_auth = SessionAuth::RwUser(AuthPin::new("fedcba".into()));
 let manager = SessionManager::new(pkcs11, *slot, &session_auth);
 
 let pool_builder = Pool::builder().connection_customizer(session_auth.into_customizer());

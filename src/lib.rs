@@ -85,10 +85,10 @@ impl SessionManager {
     /// ```no_run
     ///  # use r2d2_cryptoki::{*, cryptoki::{context::*, types::AuthPin}};
     ///  let pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
-    ///  pkcs11 .initialize(CInitializeArgs::OsThreads).unwrap();
+    ///  pkcs11 .initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)).unwrap();
     ///  let slots = pkcs11.get_slots_with_token().unwrap();
     ///  let slot = slots.first().unwrap();
-    ///  let manager = SessionManager::new(pkcs11, *slot, &SessionAuth::RwUser(AuthPin::new("abcd".to_string())));
+    ///  let manager = SessionManager::new(pkcs11, *slot, &SessionAuth::RwUser(AuthPin::new("abcd".into())));
     /// ```
     pub fn new(pkcs11: Pkcs11, slot: Slot, session_auth: &SessionAuth) -> Self {
         Self {
@@ -107,10 +107,10 @@ impl SessionManager {
     /// ```no_run
     ///  # use r2d2_cryptoki::{*, cryptoki::{context::*, types::AuthPin}};
     ///  # let pkcs11 = Pkcs11::new("libsofthsm2.so").unwrap();
-    ///  # pkcs11.initialize(CInitializeArgs::OsThreads);
+    ///  # pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK));
     ///  # let slots = pkcs11.get_slots_with_token().unwrap();
     ///  # let slot = slots.first().unwrap();
-    ///  # let session_auth = SessionAuth::RwUser(AuthPin::new("fedcba".to_string()));
+    ///  # let session_auth = SessionAuth::RwUser(AuthPin::new("fedcba".into()));
     ///  # let manager = SessionManager::new(pkcs11, *slot, &session_auth);
     ///  let pool_builder = Pool::builder().connection_customizer(session_auth.into_customizer());
     ///  let pool_builder = if let Some(max_size) = manager.max_size(100).unwrap() {
@@ -209,7 +209,7 @@ mod test {
 
     use cached::proc_macro::{cached, once};
     use cryptoki::{
-        context::CInitializeArgs,
+        context::{CInitializeArgs, CInitializeFlags},
         mechanism::Mechanism,
         object::{Attribute, KeyType, ObjectClass},
     };
@@ -235,7 +235,7 @@ mod test {
 
         let pkcs11 = Pkcs11::new("libsofthsm2.so").expect("Could not use pkcs11 library");
         pkcs11
-            .initialize(CInitializeArgs::OsThreads)
+            .initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
             .expect("Could not initialize pkcs11");
         pkcs11
     }
@@ -263,7 +263,7 @@ mod test {
 
     fn default_setup(config: Config) -> Pool {
         let pin_string = "abcde".to_string();
-        let pin = AuthPin::new(pin_string.clone());
+        let pin = AuthPin::new(pin_string.clone().into());
         let (pkcs11, slot) = default_token(pin_string);
 
         let login = SessionAuth::RwUser(pin);
