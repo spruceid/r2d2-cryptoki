@@ -324,7 +324,7 @@ mod test {
             .sign(&Mechanism::Ecdsa, *private, "test_data".as_bytes())
             .unwrap()
     }
-    fn verify(config: &Config, session: PooledConnection<SessionManager>, signature: &[u8]) {
+    fn verify(config: &Config, session: &PooledConnection<SessionManager>, signature: &[u8]) {
         let template = vec![
             Attribute::Class(ObjectClass::PUBLIC_KEY),
             Attribute::Label(config.label.clone()),
@@ -349,7 +349,7 @@ mod test {
         };
         let pool = default_setup(config.clone());
         let sig = sign(&config, &pool.get().unwrap());
-        verify(&config, pool.get().unwrap(), &sig);
+        verify(&config, &pool.get().unwrap(), &sig);
     }
 
     fn basic_test(config: &Config, pool1: Pool) {
@@ -358,10 +358,10 @@ mod test {
         let config2 = config.clone();
         loom::thread::spawn(move || {
             let sig = sign(&config1, &pool1.get().unwrap());
-            verify(&config1, pool1.get().unwrap(), &sig);
+            verify(&config1, &pool1.get().unwrap(), &sig);
         });
         let sig = sign(&config2, &pool2.get().unwrap());
-        verify(&config2, pool2.get().unwrap(), &sig);
+        verify(&config2, &pool2.get().unwrap(), &sig);
     }
 
     #[test]
@@ -401,11 +401,11 @@ mod test {
             loom::thread::spawn(move || {
                 let session = pool1.get().unwrap();
                 let sig = sign(&config, &session);
-                verify(&config, session, &sig);
+                verify(&config, &session, &sig);
             });
             let session = pool2.get().unwrap();
             let sig = sign(&config2, &session);
-            verify(&config2, session, &sig);
+            verify(&config2, &session, &sig);
         });
     }
 }
