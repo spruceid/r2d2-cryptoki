@@ -205,7 +205,11 @@ impl CustomizeConnection<Session, cryptoki::error::Error> for LoginCustomizer {
 
 #[cfg(test)]
 mod test {
-    use std::{env, fs, path::Path, time::Duration};
+    use std::{
+        env, fs,
+        path::Path,
+        time::{Duration, Instant},
+    };
 
     use cached::proc_macro::{cached, once};
     use cryptoki::{
@@ -222,6 +226,8 @@ mod test {
         max_sessions: Option<u32>,
         label: Vec<u8>,
     }
+
+    const DEFAULT_PIN: &str = "abcde";
 
     // Using cached to create only one pkcs11 ojbect, otherwise it segfaults.
     #[once(sync_writes = true)]
@@ -261,8 +267,40 @@ mod test {
         (pkcs11, slot)
     }
 
+    /// A token on a slot of its own. Login is global to a token, so sharing
+    /// [default_token] would let the sessions other tests hold open decide whether
+    /// this one is logged in.
+    #[cached(sync_writes = "default")]
+    fn isolated_token(pin: String) -> (Pkcs11, Slot) {
+        // Claiming a slot is a read-modify-write over the slot list.
+        static CLAIM_SLOT: Mutex<()> = Mutex::new(());
+
+        // Initializing the shared token first makes SoftHSM expose a spare slot.
+        let (pkcs11, _) = default_token(DEFAULT_PIN.to_string());
+        let _guard = CLAIM_SLOT.lock().unwrap_or_else(|e| e.into_inner());
+        let initialized = pkcs11
+            .get_slots_with_initialized_token()
+            .expect("Could not get slots with initialized token");
+        let slot = pkcs11
+            .get_slots_with_token()
+            .expect("Could not get slots with token")
+            .into_iter()
+            .find(|slot| !initialized.contains(slot))
+            .expect("Could not find a spare slot to initialize an isolated token on");
+        pkcs11
+            .init_token(slot, &pin.clone().into(), "isolated")
+            .expect("Could not initialize token");
+        let session = pkcs11.open_rw_session(slot).unwrap();
+        session
+            .login(UserType::So, Some(&pin.clone().into()))
+            .unwrap();
+        session.init_pin(&pin.into()).unwrap();
+
+        (pkcs11, slot)
+    }
+
     fn default_setup(config: Config) -> Pool {
-        let pin_string = "abcde".to_string();
+        let pin_string = DEFAULT_PIN.to_string();
         let pin = AuthPin::new(pin_string.clone().into());
         let (pkcs11, slot) = default_token(pin_string);
 
@@ -386,6 +424,144 @@ mod test {
             let pool1 = default_setup(config.clone());
             basic_test(&config, pool1);
         });
+    }
+
+    fn session_state(session: &Session) -> SessionState {
+        session.get_session_info().unwrap().session_state()
+    }
+
+    /// Shrinking the pool must not disturb the login: `on_release` closes the
+    /// discarded session while the count is still non-zero, so nothing logs back in
+    /// and the surviving session has to keep the token logged in on its own.
+    #[test]
+    fn pool_stays_logged_in_while_shrinking() {
+        let pin_string = "baefc".to_string();
+        let pin = AuthPin::new(pin_string.clone().into());
+        let (pkcs11, slot) = isolated_token(pin_string);
+        let customizer = LoginCustomizer {
+            auth_pin: pin.clone(),
+            user_type: UserType::User,
+            active_sessions: Default::default(),
+        };
+        let active_sessions = customizer.active_sessions.clone();
+        let active = || *active_sessions.lock().unwrap();
+        let manager = SessionManager::new(pkcs11, slot, &SessionAuth::RwUser(pin));
+        let pool = Pool::builder()
+            .max_size(2)
+            // Without this the reaped session is replaced immediately and the count
+            // never actually drops.
+            .min_idle(Some(0))
+            .idle_timeout(Some(Duration::from_millis(1)))
+            .connection_customizer(Box::new(customizer))
+            .connection_timeout(Duration::from_secs(5))
+            .build(manager)
+            .unwrap();
+
+        // Hold one session so the reaper can only take the other.
+        let held = pool.get().unwrap();
+        drop(pool.get().unwrap());
+        assert_eq!(active(), 2);
+
+        // r2d2 fixes its reaper at 30s and does not expose the knob.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while active() != 1 {
+            assert!(
+                Instant::now() < deadline,
+                "reaper did not discard the idle session"
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+
+        assert_eq!(session_state(&held), SessionState::RwUser);
+
+        // The count is still 1, so this session is established without a login of its
+        // own and depends entirely on `held` having kept the token logged in.
+        let fresh = pool.get().unwrap();
+        assert_eq!(active(), 2);
+        assert_eq!(session_state(&fresh), SessionState::RwUser);
+    }
+
+    /// Login is global to a token, so logging it out invalidates every pooled session
+    /// at once: `is_valid` has to reject them and the pool has to log back in as it
+    /// replaces them.
+    #[test]
+    fn pool_recovers_from_token_logout() {
+        let pin_string = "cbafe".to_string();
+        let pin = AuthPin::new(pin_string.clone().into());
+        let (pkcs11, slot) = isolated_token(pin_string);
+        let login = SessionAuth::RwUser(pin);
+        let manager = SessionManager::new(pkcs11.clone(), slot, &login);
+        let pool = Pool::builder()
+            .max_size(5)
+            .connection_customizer(login.into_customizer())
+            .connection_timeout(Duration::from_secs(5))
+            .build(manager)
+            .unwrap();
+
+        assert_eq!(session_state(&pool.get().unwrap()), SessionState::RwUser);
+
+        let outsider = pkcs11.open_rw_session(slot).unwrap();
+        outsider.logout().unwrap();
+        drop(outsider);
+
+        let session = pool.get().unwrap();
+        assert_eq!(session_state(&session), SessionState::RwUser);
+    }
+
+    /// Returning a [PooledSession] to the pool does not call
+    /// [CustomizeConnection::on_release], and no pool configuration reaches it
+    /// deterministically, so the customizer is driven directly.
+    #[test]
+    fn login_state_across_session_drops() {
+        let pin_string = "fedcb".to_string();
+        let pin = AuthPin::new(pin_string.clone().into());
+        let (pkcs11, slot) = isolated_token(pin_string);
+
+        let customizer = LoginCustomizer {
+            auth_pin: pin,
+            user_type: UserType::User,
+            active_sessions: Default::default(),
+        };
+        let active_sessions = customizer.active_sessions.clone();
+        let active = || *active_sessions.lock().unwrap();
+
+        let mut first = pkcs11.open_rw_session(slot).unwrap();
+        let mut second = pkcs11.open_rw_session(slot).unwrap();
+
+        // The second session reuses the token-wide login.
+        customizer.on_acquire(&mut first).unwrap();
+        assert_eq!(active(), 1);
+        assert_eq!(session_state(&first), SessionState::RwUser);
+        customizer.on_acquire(&mut second).unwrap();
+        assert_eq!(active(), 2);
+        assert_eq!(session_state(&second), SessionState::RwUser);
+
+        customizer.on_release(first);
+        assert_eq!(active(), 1);
+        assert_eq!(session_state(&second), SessionState::RwUser);
+
+        customizer.on_release(second);
+        assert_eq!(active(), 0);
+
+        // With every session gone, the next acquire has to log in again.
+        let mut third = pkcs11.open_rw_session(slot).unwrap();
+        assert_eq!(
+            session_state(&third),
+            SessionState::RwPublic,
+            "token should be logged out once its last session is closed"
+        );
+        customizer.on_acquire(&mut third).unwrap();
+        assert_eq!(active(), 1);
+        assert_eq!(session_state(&third), SessionState::RwUser);
+
+        // If the count drifts below the number of live sessions, `on_acquire` logs in
+        // while the token already is. That must not be an error.
+        *active_sessions.lock().unwrap() = 0;
+        let mut fourth = pkcs11.open_rw_session(slot).unwrap();
+        assert_eq!(session_state(&fourth), SessionState::RwUser);
+        customizer.on_acquire(&mut fourth).unwrap();
+        assert_eq!(active(), 1);
+        assert_eq!(session_state(&fourth), SessionState::RwUser);
     }
 
     #[test]
